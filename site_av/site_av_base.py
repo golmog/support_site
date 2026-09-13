@@ -98,16 +98,13 @@ class SiteAvBase:
 
     @classmethod
     def get_base_default_headers(cls):
-        """site_util의 최신 브라우저 헤더를 로드하여 기본 공통 헤더로 반환"""
         try:
-            from ..site_util import default_headers as su_default_headers, _get_default_headers
-            if su_default_headers and isinstance(su_default_headers, dict):
-                return su_default_headers.copy()
-            fetched = _get_default_headers()
-            if fetched and isinstance(fetched, dict):
-                return fetched.copy()
+            from .. import site_util
+            su_headers = getattr(site_util, 'default_headers', None)
+            if su_headers and isinstance(su_headers, dict):
+                return su_headers.copy()
         except Exception as e:
-            logger.debug(f"[SiteAvBase] site_util 헤더 로드 예외 (기본값 사용): {e}")
+            logger.debug(f"[SiteAvBase] site_util default_headers 참조 예외: {e}")
         return cls.base_default_headers.copy()
 
     @classmethod
