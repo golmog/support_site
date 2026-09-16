@@ -742,6 +742,8 @@ class SiteDmm(SiteAvBase):
                     entity.original['tagline'] = original_tagline
                     if skip_trans:
                         entity.tagline = original_tagline
+                    elif entity.content_type == 'amateur':
+                        entity.tagline = cls.trans_amateur_title(original_tagline, entity=entity)
                     else:
                         entity.tagline = cls.trans_by_llm(original_tagline)
 
@@ -1014,6 +1016,12 @@ class SiteDmm(SiteAvBase):
 
         if cls.config['use_extras']:
             cls.process_extras(entity, tree, detail_url, api_data)
+
+        if entity.content_type == 'amateur' and entity.originaltitle:
+            try:
+                entity = cls.shiroutoname_info(entity)
+            except Exception as e_shirouto:
+                logger.debug(f"[{cls.site_name}] Amateur Shiroutoname 보정 중 오류 ({entity.originaltitle}): {e_shirouto}")
 
         # Landscape(PL) 이미지 폴백 로직
         try:

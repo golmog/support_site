@@ -774,9 +774,15 @@ class SiteFc2com(SiteAvBase):
                     if local_pl_path_for_crop: 
                         img_pl = Image.open(local_pl_path_for_crop)
                     else: 
-                        res_pl = cls.get_response(raw_image_urls['pl'], stream=True, timeout=5)
-                        if res_pl and res_pl.status_code == 200:
-                            img_pl = Image.open(BytesIO(res_pl.content))
+                        for attempt in range(3):
+                            try:
+                                res_pl = cls.get_response(raw_image_urls['pl'], stream=True, timeout=10)
+                                if res_pl and res_pl.status_code == 200:
+                                    img_pl = Image.open(BytesIO(res_pl.content))
+                                    break
+                            except Exception as e_pl_net:
+                                logger.debug(f"[{cls.site_name}] 스마트 크롭 PL 다운로드 재시도 ({attempt + 1}/3): {e_pl_net}")
+                            time.sleep(1.0)
                     
                     if img_pl:
                         cropped = cls._smart_crop_image(img_pl)
