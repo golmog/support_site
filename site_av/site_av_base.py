@@ -270,12 +270,18 @@ class SiteAvBase:
             method = "POST"
             kwargs["data"] = post_data
 
-        try:
-            res = cls.session.request(method, url, headers=request_headers, proxies=proxies, **kwargs)
-            return res
-        except requests.exceptions.RequestException as e:
-            logger.error(f"get_response (requests) error for {url}: {e}")
-            return None
+        max_attempts = kwargs.pop("max_retries", 3)
+        for attempt in range(max_attempts):
+            try:
+                res = cls.session.request(method, url, headers=request_headers, proxies=proxies, **kwargs)
+                return res
+            except requests.exceptions.RequestException as e:
+                if attempt < max_attempts - 1:
+                    logger.debug(f"get_response 일시 오류 ({attempt + 1}/{max_attempts}회 재시도 대기): {url} (사유: {e})")
+                    time.sleep(1.0)
+                    continue
+                logger.error(f"get_response (requests) error for {url}: {e}")
+                return None
 
 
     @classmethod
@@ -319,11 +325,16 @@ class SiteAvBase:
             if p_url: proxies = {"http": p_url, "https": p_url}
 
         # 기본 공통 헤더를 바탕으로 호출부 전달 헤더를 안전하게 병합
-        base_req_headers = cls.default_headers.copy() if cls.default_headers else cls.get_base_default_headers()
+        # 호출부 전달 헤더가 있으면 이를 우선 적용하고 기본 브라우저 헤더만 보충 (타 사이트 쿠키 누출 방지)
         passed_headers = kwargs.pop("headers", None)
-        request_headers = base_req_headers.copy()
         if passed_headers and isinstance(passed_headers, dict):
-            request_headers.update(passed_headers)
+            request_headers = passed_headers.copy()
+            base_headers = cls.get_base_default_headers()
+            for k, v in base_headers.items():
+                if k.lower() not in (h.lower() for h in request_headers.keys()):
+                    request_headers[k] = v
+        else:
+            request_headers = cls.default_headers.copy() if cls.default_headers else cls.get_base_default_headers()
 
         # FlareSolverr가 뚫어놓은 쿠키가 있다면 cffi 요청에 강제 주입
         if getattr(cls, '_cf_cookies', None) and (time.time() - getattr(cls, '_cf_cookie_timestamp', 0) < getattr(cls, 'CF_COOKIE_EXPIRY', 3600)):
@@ -632,6 +643,227 @@ class SiteAvBase:
             logger.error(f"[{cls.site_name}] [Ollama] Unexpected Error: {e}. Falling back to default.")
             logger.error(traceback.format_exc())
             return cls.trans(text)
+
+
+    @classmethod
+    def _kana_to_hangul(cls, text):
+        """외래어 표기법 및 통용 발음 기준의 완전 독립형 일본어 가나-한글 음차 변환기"""
+        if not text:
+            return ""
+
+        # 가타카나를 히라가나로 정규화
+        normalized = ""
+        for ch in text:
+            code = ord(ch)
+            if 0x30A1 <= code <= 0x30F6:
+                normalized += chr(code - 0x60)
+            else:
+                normalized += ch
+
+        digraphs = {
+            'きゃ': '캬', 'きゅ': '큐', 'きょ': '쿄',
+            'しゃ': '샤', 'しゅ': '슈', 'しょ': '쇼',
+            'ちゃ': '차', 'ちゅ': '추', 'ちょ': '초',
+            'にゃ': '냐', 'にゅ': '뉴', 'にょ': '뇨',
+            'ひゃ': '햐', 'ひゅ': '휴', 'ひょ': '효',
+            'みゃ': '먀', 'みゅ': '뮤', 'みょ': '묘',
+            'りゃ': '랴', 'りゅ': '류', 'りょ': '료',
+            'ぎゃ': '갸', 'ぎゅ': '규', 'ぎょ': '교',
+            'じゃ': '자', 'じゅ': '주', 'じょ': '조',
+            'ぢゃ': '자', 'ぢゅ': '주', 'ぢょ': '조',
+            'びゃ': '뱌', 'びゅ': '뷰', 'びょ': '뵤',
+            'ぴゃ': '퍄', 'ぴゅ': '퓨', 'ぴょ': '표',
+            'てぃ': '티', 'でぃ': '디',
+            'ふぁ': '파', 'ふぃ': '피', 'ふぇ': '페', 'ふぉ': '포',
+            'ゔぁ': '바', 'ゔぃ': '비', 'ゔ': '부', 'ゔぇ': '베', 'ゔぉ': '보'
+        }
+
+        monographs = {
+            'あ': '아', 'い': '이', 'う': '우', 'え': '에', 'お': '오',
+            'か': '카', 'き': '키', 'く': '쿠', 'け': '케', 'こ': '코',
+            'さ': '사', 'し': '시', 'す': '스', 'せ': '세', 'そ': '소',
+            'た': '타', 'ち': '치', 'つ': '츠', 'て': '테', 'と': '토',
+            'な': '나', 'に': '니', 'ぬ': '누', 'ね': '네', 'の': '노',
+            'は': '하', 'ひ': '히', 'ふ': '후', 'へ': '헤', 'ほ': '호',
+            'ま': '마', 'み': '미', 'む': '무', 'め': '메', 'も': '모',
+            'や': '야', 'ゆ': '유', 'よ': '요',
+            'ら': '라', 'り': '리', 'る': '루', 'れ': '레', 'ろ': '로',
+            'わ': '와', 'ゐ': '이', 'ゑ': '에', 'を': '오',
+            'が': '가', 'ぎ': '기', 'ぐ': '구', 'げ': '게', 'ご': '고',
+            'ざ': '자', 'じ': '지', 'ず': '즈', 'ぜ': '제', 'ぞ': '조',
+            'だ': '다', 'ぢ': '지', 'づ': '즈', 'で': '데', 'ど': '도',
+            'ば': '바', 'び': '비', 'ぶ': '부', 'べ': '베', 'ぼ': '보',
+            'ぱ': '파', 'ぴ': '피', 'ぷ': '푸', 'ぺ': '페', 'ぽ': '포',
+            'ー': ''
+        }
+
+        result = []
+        i = 0
+        n = len(normalized)
+
+        while i < n:
+            # 복합 요음(2글자) 우선 매칭
+            if i + 1 < n and normalized[i:i+2] in digraphs:
+                result.append(digraphs[normalized[i:i+2]])
+                i += 2
+                continue
+
+            char = normalized[i]
+
+            # 받침 발음(ん) 처리: 직전 음절에 받침 'ㄴ' 결합
+            if char == 'ん':
+                if result and ('가' <= result[-1] <= '힣'):
+                    prev = result[-1]
+                    code = ord(prev) - 0xAC00
+                    if code % 28 == 0:
+                        result[-1] = chr(ord(prev) + 4)
+                    else:
+                        result.append('은')
+                else:
+                    result.append('은')
+                i += 1
+                continue
+
+            # 촉음(っ) 처리: 직전 음절에 받침 'ㅅ' 결합
+            if char == 'っ':
+                if result and ('가' <= result[-1] <= '힣'):
+                    prev = result[-1]
+                    code = ord(prev) - 0xAC00
+                    if code % 28 == 0:
+                        result[-1] = chr(ord(prev) + 19)
+                    else:
+                        result.append('읏')
+                else:
+                    result.append('읏')
+                i += 1
+                continue
+
+            if char in monographs:
+                result.append(monographs[char])
+            else:
+                result.append(char)
+            i += 1
+
+        return "".join(result)
+
+
+    @classmethod
+    def trans_amateur_title(cls, text, entity=None):
+        """아마추어 단문 제목 특화 하이브리드 음차/번역 엔진"""
+        raw_text = str(text or '').strip()
+        if not raw_text:
+            return raw_text
+
+        # 나이/연령 접미사 패턴 분리 (예: 'もも 20歳', 'さくら(21)')
+        name_part = raw_text
+        suffix = ""
+        age_match = re.search(r'[\s(（【]?(\d{1,2})歳?[)）】]?$', raw_text)
+        if age_match:
+            candidate_name = raw_text[:age_match.start()].strip()
+            if candidate_name:
+                name_part = candidate_name
+                suffix = f" {age_match.group(1)}세"
+
+        clean_name = name_part.strip()
+
+        # 메타데이터에 등록된 배우명과 일치하는지 확인
+        if entity and getattr(entity, 'actor', None):
+            for act in entity.actor:
+                act_org = getattr(act, 'name_org', '') or (act.get('name_org', '') if isinstance(act, dict) else '')
+                act_ko = getattr(act, 'name_ko', '') or (act.get('name_ko', '') if isinstance(act, dict) else '')
+                if act_org and clean_name.lower() == act_org.lower() and act_ko:
+                    logger.debug(f"[{cls.site_name}] 아마추어 제목 배우명 일치 채택: '{raw_text}' -> '{act_ko}{suffix}'")
+                    return f"{act_ko}{suffix}"
+
+        # 5자 이하의 순수 히라가나/가타카나 이름인 경우 내장 규칙 기반 음차 즉시 변환
+        is_pure_kana = bool(re.match(r'^[ぁ-んァ-ヶー]+$', clean_name))
+        if is_pure_kana and len(clean_name) <= 5:
+            hangul_name = cls._kana_to_hangul(clean_name)
+            if hangul_name:
+                logger.debug(f"[{cls.site_name}] 순수 가나 규칙 기반 음차 적용: '{clean_name}' -> '{hangul_name}'")
+                return f"{hangul_name}{suffix}"
+
+        # 4자 이하의 한자 포함 단문 인명 추정 단어 처리
+        if len(clean_name) <= 4 and not re.search(r'[\s,._/!?~]', clean_name):
+            use_ollama = bool(cls.config and cls.config.get('use_ollama'))
+
+            # LLM 사용 시: 설명이나 괄호 부기를 원천 차단하는 엄격한 인명 발음 전용 프롬프트 적용
+            if use_ollama:
+                api_url = cls.config.get('ollama_url', 'http://ollama:11434/api/chat')
+                strict_name_prompt = (
+                    "너는 일본어 여성 인명/예명 번역 전문 어시스턴트이다.\n"
+                    "주어지는 텍스트는 성인 영상에 출연한 여성의 이름(예명)이다.\n"
+                    "규칙:\n"
+                    "- 사물, 식물, 과일 등의 사전적 단어 뜻으로 번역하지 말고, 반드시 한국에서 통용되는 일본 인명 발음(음차)으로만 표기할 것.\n"
+                    "- 괄호, 한자 표기, 뜻풀이, 부가 설명 등 어떠한 추가 텍스트도 일절 붙이지 말 것. (예: '모모(복숭아)', '사쿠라 (벚꽃)', '아오이: 해바라기' 등 절대 금지)\n"
+                    "- 인사말, 마크다운 따옴표, 줄바꿈 없이 오직 한글 이름 단어 하나만 단독으로 출력할 것.\n"
+                    "예시:\n"
+                    "もも -> 모모\n"
+                    "さくら -> 사쿠라\n"
+                    "葵 -> 아오이\n"
+                    "結衣 -> 유이\n"
+                    "凛 -> 린\n"
+                    "美咲 -> 미사키\n"
+                    "楓 -> 카에데"
+                )
+
+                payload = {
+                    "model": cls.config.get('ollama_model', 'gemma4:12b'),
+                    "messages": [
+                        {"role": "system", "content": strict_name_prompt},
+                        {"role": "user", "content": clean_name}
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "top_p": 0.9,
+                        "repeat_penalty": 1.15,
+                        "num_ctx": 1024,
+                    }
+                }
+
+                try:
+                    with cls._ollama_lock:
+                        res = requests.post(api_url, json=payload, timeout=30)
+                        if res.status_code == 200:
+                            raw_out = res.json().get("message", {}).get("content", "").strip()
+                            # 괄호 및 부가 설명 문자열 정제
+                            cleaned = re.sub(r'[\(\[\{（【].*?[\)\]\}）】]', '', raw_out).strip()
+                            cleaned = re.sub(r'^[^\w가-힣]+|[^\w가-힣]+$', '', cleaned)
+                            if ':' in cleaned:
+                                cleaned = cleaned.split(':')[-1].strip()
+                            if '->' in cleaned:
+                                cleaned = cleaned.split('->')[-1].strip()
+
+                            if cleaned and cls.is_include_hangul(cleaned) and len(cleaned) <= 10:
+                                logger.debug(f"[{cls.site_name}] LLM 인명 전용 음차 번역 성공: '{clean_name}' -> '{cleaned}'")
+                                return f"{cleaned}{suffix}"
+                except Exception as e_llm_name:
+                    logger.debug(f"[{cls.site_name}] LLM 인명 전용 번역 실패, 폴백 진행: {e_llm_name}")
+
+            # LLM 미사용 시: 인물 DB에서 한글 표기명을 우선 검색
+            else:
+                try:
+                    from ..setup import F
+                    meta_plugin = F.PluginManager.get_plugin_instance('metadata')
+                    if meta_plugin:
+                        meta_db_mod = meta_plugin.get_module('meta_db')
+                        if meta_db_mod:
+                            p_list = meta_db_mod.person_search(clean_name, domain="JAV")
+                            for p in p_list:
+                                if (p.get('name_org') == clean_name or p.get('name_en') == clean_name) and p.get('name_ko'):
+                                    logger.debug(f"[{cls.site_name}] 인물 DB 대조 인명 채택: '{clean_name}' -> '{p['name_ko']}'")
+                                    return f"{p['name_ko']}{suffix}"
+                except Exception as e_db_name:
+                    logger.debug(f"[{cls.site_name}] 인물 DB 대조 건너뜀: {e_db_name}")
+
+            # 단문 인명 번역 최종 폴백
+            fallback_res = cls.trans(clean_name)
+            return f"{fallback_res}{suffix}"
+
+        # 그 외 일반 서술형/문장형 제목은 표준 파이프라인 수행
+        return cls.trans_by_llm(raw_text)
+
 
     # endregion 
     ################################################
@@ -2231,7 +2463,9 @@ class SiteAvBase:
                     if (dist_a + dist_p) < threshold:
                         return pos
                 finally:
-                    if cropped_im: cropped_im.close()
+                    # 원본 객체가 아닌 새로 생성된 크롭 이미지일 때만 안전하게 닫기
+                    if cropped_im and cropped_im is not im_lg_obj:
+                        cropped_im.close()
             return None
         except Exception as e:
             logger.debug(f"has_hq_poster exception: {e}")
@@ -2372,11 +2606,54 @@ class SiteAvBase:
 
 
     @classmethod
+    def _is_actor_in_db(cls, actor_name):
+        """배우명이 로컬 인물 DB(meta_person) 또는 배포 DB(jav_actors)에 이미 등록되어 매칭 가능한지 확인"""
+        if not actor_name or not isinstance(actor_name, str):
+            return False
+        clean_name = actor_name.strip()
+        if not clean_name or clean_name in ['素人', '----', 'なし', '不明', '素人さん', '一般人']:
+            return False
+
+        try:
+            from .site_avdbs import SiteAvdbs
+            # 통합 인물 DB(meta_person) 선행 확인
+            if SiteAvdbs._search_from_meta_person_db([clean_name]):
+                return True
+            # 로컬 배포 DB(jav_actors_*.db) 확인
+            if SiteAvdbs._search_from_local_db([clean_name]):
+                return True
+        except Exception as e:
+            logger.debug(f"[{cls.site_name}] 배우 DB 존재 여부 확인 예외: {e}")
+        return False
+
+
+    @classmethod
     def shiroutoname_info(cls, entity):
         """upgrade entity(meta info) by shiroutoname"""
+        if not entity or not getattr(entity, 'originaltitle', None):
+            return entity
+
+        # 배우 정보가 존재하고 이미 DB에 등록된 유효 배우인 경우 불필요한 원격 조회 생략
+        actors = getattr(entity, 'actor', None) or []
+        if actors:
+            has_db_matched_actor = False
+            for act in actors:
+                act_name = getattr(act, 'name_org', '') or (act.get('name_org', '') if isinstance(act, dict) else '')
+                if not act_name:
+                    act_name = getattr(act, 'name', '') or (act.get('name', '') if isinstance(act, dict) else '')
+                if cls._is_actor_in_db(act_name):
+                    has_db_matched_actor = True
+                    break
+
+            if has_db_matched_actor:
+                # logger.debug(f"[{cls.site_name}] 이미 DB 매칭된 배우가 존재하므로 Shiroutoname 조회를 생략합니다: {entity.originaltitle}")
+                return entity
+
+        target_code = entity.originaltitle.lower().strip()
         data = None
         for d in cls.__shiroutoname_info(entity.originaltitle):
-            if entity.originaltitle.lower() in d["code"].lower():
+            d_code = (d.get("code") or "").lower().strip()
+            if target_code in d_code or d_code in target_code:
                 data = d
                 break
         if data is None:
@@ -2387,72 +2664,129 @@ class SiteAvBase:
             entity.year = int(value[:4])
         if data.get("actors", []):
             entity.actor = [EntityActor(name_org=a["name"]) for a in data["actors"]]
+            logger.debug(f"[{cls.site_name}] Shiroutoname 배우 정보 보정 완료: {entity.originaltitle} -> {[a.name_org for a in entity.actor]}")
         return entity
 
 
     @classmethod
     def __shiroutoname_info(cls, keyword):
         url = "https://shiroutoname.com/"
-        
-        # 타임아웃 및 서버 응답 방어
-        try:
-            tree = cls.get_tree(url, params={"s": keyword}, timeout=30)
-            if tree is None:
-                logger.debug(f"[{cls.site_name}] Shiroutoname skipped (Timeout or No Response) for: {keyword}")
-                return []
-        except Exception as e_req:
-            logger.debug(f"[{cls.site_name}] Shiroutoname request exception: {e_req}")
+        tree = None
+        max_retries = 2
+        timeout_sec = 10
+
+        # 최신 브라우저 기본 헤더(User-Agent 등)를 바탕으로 shiroutoname 전용 헤더 구성
+        shirouto_headers = cls.get_base_default_headers()
+        shirouto_headers['Referer'] = 'https://shiroutoname.com/'
+        shirouto_headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        shirouto_headers['Accept-Language'] = 'ja,ko-KR;q=0.9,ko;q=0.8,en-US;q=0.7,en;q=0.6'
+        shirouto_headers.pop('cookie', None)
+        shirouto_headers.pop('Cookie', None)
+
+        # 워드프레스 검색 쿼리 지연을 고려하여 10초 타임아웃 및 재시도 수행
+        for attempt in range(max_retries):
+            try:
+                tree = cls.get_tree(url, params={"s": keyword}, headers=shirouto_headers, timeout=timeout_sec)
+                if tree is not None:
+                    break
+                logger.debug(f"[{cls.site_name}] Shiroutoname 응답 없음, 재시도 ({attempt + 1}/{max_retries}): {keyword}")
+                time.sleep(1)
+            except Exception as e_req:
+                logger.debug(f"[{cls.site_name}] Shiroutoname 요청 예외 ({attempt + 1}/{max_retries}): {e_req}")
+                time.sleep(1)
+
+        if tree is None:
+            logger.debug(f"[{cls.site_name}] Shiroutoname 접속 불가로 조회 건너뜀 (Timeout or No Response): {keyword}")
+            return []
+
+        # 검색 결과 0건 감지 시 즉시 조기 반환 (Fast-Exit)
+        is_empty_result = bool(
+            tree.xpath('//div[contains(@class, "none")]') or
+            tree.xpath('//h1[contains(text(), "結果0件")]') or
+            tree.xpath('//p[contains(@class, "none")]')
+        )
+        if is_empty_result:
+            logger.debug(f"[{cls.site_name}] Shiroutoname 검색 결과 0건 확인 (조기 종료): {keyword}")
             return []
 
         results = []
         try:
-            for article in tree.xpath("//section//article"):
-                title = article.xpath("./h2")[0].text_content()
-                title = title[title.find("【") + 1 : title.rfind("】")]
+            articles = tree.xpath("//section//article")
+            if not articles:
+                articles = tree.xpath("//article")
 
-                link = article.xpath(".//a/@href")[0]
-                thumb_url = article.xpath(".//a/img/@data-src")[0]
-                title_alt = article.xpath(".//a/img/@alt")[0]
-                
-                if title != title_alt:
-                    logger.debug(f"[{cls.site_name}] Shiroutoname mismatch detected. Skipping unreliable data: '{title}' != '{title_alt}'")
-                    continue 
+            for article in articles:
+                # 품번(code) 추출 (product 영역의 텍스트 우선 탐색)
+                code_val = ""
+                code_nodes = article.xpath('.//div[contains(@class, "product-title-name")]//text()')
+                if code_nodes:
+                    code_val = "".join(code_nodes).strip()
+                if not code_val:
+                    alt_code_nodes = article.xpath('.//div[contains(text(), "品番")]/following-sibling::div//text()')
+                    if alt_code_nodes:
+                        code_val = "".join(alt_code_nodes).strip()
 
-                result = {"title": title, "link": link, "thumb_url": thumb_url}
-
-                for div in article.xpath("./div/div"):
-                    kv = div.xpath("./div")
-                    if len(kv) != 2:
-                        continue
-                    key, value = [x.text_content().strip() for x in kv]
-                    if not key.endswith("："):
-                        continue
-
-                    if key.startswith("品番"):
-                        result["code"] = value
-                        another_link = kv[1].xpath("./a/@href")[0]
-                    elif key.startswith("素人名"):
-                        result["name"] = value
-                    elif key.startswith("配信日"):
-                        result["premiered"] = value
-                    elif key.startswith("シリーズ"):
-                        result["series"] = value
-
-                a_class = "mlink" if "mgstage.com" in link else "flink"
+                # 출연 배우(actors) 추출 (mlink, flink 구분 없이 실제 배우명 수집 및 중복 제거)
                 actors = []
-                for a_tag in article.xpath(f'./div/div/a[@class="{a_class}"]'):
-                    actors.append(
-                        {
-                            "name": a_tag.text_content().strip(),
-                            "href": a_tag.xpath("./@href")[0],
-                        }
-                    )
-                result["actors"] = actors
-                results.append(result)
-                
+                seen_actor_names = set()
+                actress_links = article.xpath('.//div[contains(@class, "actress-name")]//a | .//a[contains(@class, "mlink") or contains(@class, "flink")]')
+                for a_tag in actress_links:
+                    act_name = a_tag.text_content().strip()
+                    act_name = re.sub(r'\s+', ' ', act_name).strip()
+                    if act_name and act_name not in seen_actor_names:
+                        seen_actor_names.add(act_name)
+                        actors.append({
+                            "name": act_name,
+                            "href": a_tag.attrib.get('href', '')
+                        })
+
+                # 출시일(premiered) 추출
+                premiered_val = ""
+                prem_nodes = article.xpath('.//div[contains(text(), "配信日")]/following-sibling::div//text()')
+                if prem_nodes:
+                    premiered_val = "".join(prem_nodes).strip()
+
+                # 아마추어 소인명(name) 추출
+                ama_name = ""
+                ama_nodes = article.xpath('.//div[contains(text(), "素人名")]/following-sibling::div//text()')
+                if ama_nodes:
+                    ama_name = "".join(ama_nodes).strip()
+
+                # 시리즈(series) 추출
+                series_val = ""
+                series_nodes = article.xpath('.//div[contains(text(), "シリーズ")]/following-sibling::div//text()')
+                if series_nodes:
+                    series_val = "".join(series_nodes).strip()
+
+                # 제목(title) 및 이미지(thumb_url) 안전 추출
+                h2_nodes = article.xpath('.//h2')
+                raw_title = h2_nodes[0].text_content().strip() if h2_nodes else ""
+                img_nodes = article.xpath('.//img')
+                thumb_url = ""
+                if img_nodes:
+                    thumb_url = img_nodes[0].attrib.get('data-src') or img_nodes[0].attrib.get('src') or ""
+
+                link_nodes = article.xpath('.//a/@href')
+                article_link = link_nodes[0] if link_nodes else ""
+
+                if code_val or actors:
+                    results.append({
+                        "title": raw_title,
+                        "code": code_val,
+                        "name": ama_name,
+                        "premiered": premiered_val,
+                        "series": series_val,
+                        "link": article_link,
+                        "thumb_url": thumb_url,
+                        "actors": actors
+                    })
+
+            if results:
+                logger.debug(f"[{cls.site_name}] Shiroutoname 검색 성공: {keyword} -> {len(results)}건 발견")
+
         except Exception as e_parse:
             logger.debug(f"[{cls.site_name}] Shiroutoname parsing error: {e_parse}")
-            
+
         return results
 
 

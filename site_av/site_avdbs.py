@@ -145,55 +145,69 @@ class SiteAvdbs(SiteAvBase):
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
+                cursor.execute("PRAGMA table_info(actors)")
+                existing_cols = {col[1] for col in cursor.fetchall()}
+
+                col_org = 'name_org' if 'name_org' in existing_cols else 'inner_name_cn'
+                col_ko = 'name_ko' if 'name_ko' in existing_cols else 'inner_name_kr'
+                col_en = 'name_en' if 'name_en' in existing_cols else 'inner_name_en'
+                col_onm = 'actor_onm' if 'actor_onm' in existing_cols else ('aliases' if 'aliases' in existing_cols else col_org)
+                has_site_col = 'site' in existing_cols
+
                 for current_search_name in name_variations_to_search:
-                    query1 = "SELECT * FROM actors WHERE site = ? AND inner_name_cn = ? LIMIT 1"
-                    cursor.execute(query1, (cls.site_name, current_search_name))
+                    site_filter = "site = ? AND " if has_site_col else ""
+                    site_params = (cls.site_name,) if has_site_col else ()
+
+                    query1 = f"SELECT * FROM actors WHERE {site_filter}{col_org} = ? LIMIT 1"
+                    cursor.execute(query1, site_params + (current_search_name,))
                     row = cursor.fetchone()
                     
                     if not row:
-                        query2 = "SELECT * FROM actors WHERE site = ? AND (actor_onm LIKE ? OR inner_name_cn LIKE ?)"
+                        query2 = f"SELECT * FROM actors WHERE {site_filter}({col_onm} LIKE ? OR {col_org} LIKE ?)"
                         like_term = f"%{current_search_name}%"
-                        cursor.execute(query2, (cls.site_name, like_term, like_term))
+                        cursor.execute(query2, site_params + (like_term, like_term))
                         potential_rows = cursor.fetchall()
                         if potential_rows:
                             for potential_row in potential_rows:
                                 matched_by_onm = False
-                                if potential_row["actor_onm"]:
-                                    matched_by_onm = cls._parse_and_match_other_names(potential_row["actor_onm"], current_search_name)
+                                if col_onm in potential_row.keys() and potential_row[col_onm]:
+                                    matched_by_onm = cls._parse_and_match_other_names(potential_row[col_onm], current_search_name)
                                 
                                 matched_by_cn = False
-                                if potential_row["inner_name_cn"]:
-                                    cn_parts = {part.strip() for part in re.split(r'[（）()/]', potential_row["inner_name_cn"]) if part.strip()}
+                                if col_org in potential_row.keys() and potential_row[col_org]:
+                                    cn_parts = {part.strip() for part in re.split(r'[（）()/]', potential_row[col_org]) if part.strip()}
                                     if current_search_name in cn_parts:
                                         matched_by_cn = True
 
-                                if matched_by_onm or matched_by_cn:
-                                    row = potential_row
-                                    break
+                                    if matched_by_onm or matched_by_cn:
+                                        row = potential_row
+                                        break
 
                     if not row:
-                        query3 = "SELECT * FROM actors WHERE site = ? AND (inner_name_kr = ? OR inner_name_en = ? OR inner_name_en LIKE ?) LIMIT 1"
-                        cursor.execute(query3, (cls.site_name, current_search_name, current_search_name, f"%({current_search_name})%"))
+                        query3 = f"SELECT * FROM actors WHERE {site_filter}({col_ko} = ? OR {col_en} = ? OR {col_en} LIKE ?) LIMIT 1"
+                        cursor.execute(query3, site_params + (current_search_name, current_search_name, f"%({current_search_name})%"))
                         row = cursor.fetchone()
                     
                     if row:
-                        korean_name = row["inner_name_kr"]
-                        name_en_field = row["inner_name_en"] if row["inner_name_en"] else ""
+                        korean_name = row[col_ko] if col_ko in row.keys() else ""
+                        name_en_field = row[col_en] if (col_en in row.keys() and row[col_en]) else ""
+                        name_org_field = row[col_org] if (col_org in row.keys() and row[col_org]) else current_search_name
                         
                         # 단일 우선순위 문자열 규칙으로 썸네일 URL 추출
                         thumb_url = cls._resolve_local_db_thumb_url(row, order_str=img_order, img_prefix=prefix)
                             
                         if name_en_field:
                             match_name_en = re.match(r"^(.*?)\s*\(.*\)$", name_en_field)
-                            if match_name_en: name_en_field = match_name_en.group(1).strip()
+                            if match_name_en:
+                                name_en_field = match_name_en.group(1).strip()
                         
-                        actor_idx = str(row["actor_id"] or "").strip()
+                        actor_idx = str(row["actor_id"] or "").strip() if "actor_id" in row.keys() else ""
 
                         if korean_name and thumb_url:
                             logger.debug(f"AVDBS DB: Match found for '{current_search_name}': {korean_name} ({name_en_field})")
 
                             return {
-                                "name_org": str(row["inner_name_cn"] or current_search_name).strip(),
+                                "name_org": str(name_org_field).strip(),
                                 "name_ko": korean_name, 
                                 "name_en": name_en_field, 
                                 "thumb": thumb_url, 

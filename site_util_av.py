@@ -935,7 +935,7 @@ class SiteUtilAv:
             # 계산된 너비가 원본 너비보다 크면, 크롭이 의미 없으므로 원본 반환
             # 또는 너비를 원본 너비에 맞추고 높이를 조정할 수도 있으나, 현재는 원본 반환이 안전
             # logger.debug(f"imcrop: Calculated new_w ({new_w}) > original width ({width}). Returning original.")
-            return im
+            return im.copy()
 
         if position == "l":
             left = 0

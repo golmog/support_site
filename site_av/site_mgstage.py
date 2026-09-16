@@ -243,7 +243,7 @@ class SiteMgstage(SiteAvBase):
                 if skip_trans:
                     entity.tagline = original_tagline
                 else:
-                    entity.tagline = cls.trans_by_llm(original_tagline)
+                    entity.tagline = cls.trans_amateur_title(original_tagline, entity=entity)
 
             try:
                 dd_nodes = tree.xpath('//*[@id="introduction"]/dd')
@@ -305,22 +305,43 @@ class SiteMgstage(SiteAvBase):
                     if rt_match: entity.runtime = int(rt_match.group(1))
                 elif "出演" in key_text:
                     actors_list = []
-                    for a_node in value_node_instance.xpath("./a"):
-                        act_name = a_node.text_content().strip().split(" ", 1)[0]
-                        if not act_name:
-                            continue
-                        act_obj = EntityActor(act_name)
-                        href_raw = a_node.attrib.get('href', '').strip()
-                        if href_raw:
-                            full_mgs_url = href_raw if href_raw.startswith('http') else f"{SITE_BASE_URL}{href_raw}"
-                            # actor[] 파라미터에서 URL 디코딩하여 '이름_숫자' 고유키 추출
-                            mgs_id_match = re.search(r'actor(?:%5B%5D|\[\])=([^&]+)', href_raw)
-                            mgs_actor_id = py_urllib_parse.unquote(mgs_id_match.group(1)) if mgs_id_match else act_name
-                            act_obj.extra_info = {
-                                'site_actor_id': mgs_actor_id,
-                                'site_actor_url': full_mgs_url
-                            }
-                        actors_list.append(act_obj)
+                    a_nodes = value_node_instance.xpath("./a")
+
+                    if a_nodes:
+                        for a_node in a_nodes:
+                            raw_act_text = a_node.text_content().strip()
+                            if not raw_act_text or raw_act_text == "----":
+                                continue
+
+                            # 슬래시(/, ／) 단위로 분리하여 첫 번째 항목(이름) 추출
+                            first_part = re.split(r'[/／]', raw_act_text)[0].strip()
+                            name_candidate = first_part.split(" ", 1)[0].strip()
+                            # 호칭 접미사(さん, ちゃん) 정제 (예: '聖子さん' -> '聖子')
+                            act_name = re.sub(r'(さん|ちゃん)$', '', name_candidate).strip() or name_candidate
+
+                            if not act_name:
+                                continue
+
+                            act_obj = EntityActor(act_name)
+                            href_raw = a_node.attrib.get('href', '').strip()
+                            if href_raw:
+                                full_mgs_url = href_raw if href_raw.startswith('http') else f"{SITE_BASE_URL}{href_raw}"
+                                # actor[] 파라미터에서 URL 디코딩하여 고유키 추출
+                                mgs_id_match = re.search(r'actor(?:%5B%5D|\[\])=([^&]+)', href_raw)
+                                mgs_actor_id = py_urllib_parse.unquote(mgs_id_match.group(1)) if mgs_id_match else act_name
+                                act_obj.extra_info = {
+                                    'site_actor_id': mgs_actor_id,
+                                    'site_actor_url': full_mgs_url
+                                }
+                            actors_list.append(act_obj)
+                    elif value_text_content and value_text_content != "----":
+                        # 태그 링크 없이 텍스트로만 제공되는 아마추어 정보 폴백
+                        first_part = re.split(r'[/／]', value_text_content)[0].strip()
+                        name_candidate = first_part.split(" ", 1)[0].strip()
+                        act_name = re.sub(r'(さん|ちゃん)$', '', name_candidate).strip() or name_candidate
+                        if act_name:
+                            actors_list.append(EntityActor(act_name))
+
                     entity.actor = actors_list
                 elif "監督" in key_text: 
                     entity.director = value_text_content.strip() or None
@@ -426,7 +447,7 @@ class SiteMgstage(SiteAvBase):
             try:
                 entity = cls.shiroutoname_info(entity)
             except Exception as e_shirouto:
-                logger.exception(f"MGS (Ama): Shiroutoname error: {e_shirouto}")
+                logger.debug(f"[{cls.site_name}] Shiroutoname 보정 중 오류 ({entity.originaltitle}): {e_shirouto}")
 
         try:
             if getattr(entity, 'genre', None) is None:
