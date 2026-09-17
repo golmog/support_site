@@ -1159,34 +1159,30 @@ class SiteAvBase:
                             matched_folder_format = str(candidate_fmt).strip()
                             break
 
-        # 카테고리별 포맷팅 및 폴백 결정
+        # 카테고리별 기본 포맷 결정
         if target_cat == 'JAV_CEN':
-            save_fmt = matched_folder_format or setting_source.get("jav_censored_image_server_save_format") or "/jav/cen/{label_1}/{label}"
-            formatted_sub = save_fmt.format_map(data_tokens).strip('/\\')
-            rel_dir = formatted_sub if formatted_sub.startswith('jav/cen') else os.path.join('jav/cen', formatted_sub).replace('\\', '/')
-
+            default_fmt = "jav/cen/{label_1}/{label}"
+            save_fmt = matched_folder_format or setting_source.get("jav_censored_image_server_save_format") or default_fmt
         elif target_cat == 'JAV_UNCEN':
+            matched_uncen = None
             if not matched_folder_format:
                 for def_rule in cls.DEFAULT_UNCEN_IMAGE_RULES:
                     if re.search(def_rule['레이블'], base_label, re.IGNORECASE):
-                        matched_folder_format = def_rule['폴더포맷']
+                        matched_uncen = def_rule['폴더포맷']
                         break
-            save_fmt = matched_folder_format or setting_source.get("jav_uncensored_image_server_save_format") or "/jav/uncen/{label}"
-            formatted_sub = save_fmt.format_map(data_tokens).strip('/\\')
-            rel_dir = formatted_sub if formatted_sub.startswith('jav/uncen') else os.path.join('jav/uncen', formatted_sub).replace('\\', '/')
-
+            default_fmt = matched_uncen or "jav/uncen/{label}"
+            save_fmt = matched_folder_format or setting_source.get("jav_uncensored_image_server_save_format") or default_fmt
         elif target_cat == 'WESTERN':
-            save_fmt = matched_folder_format or setting_source.get("western_image_server_save_format") or "/western/scenes/{studio_1}/{studio}"
-            formatted_sub = save_fmt.format_map(data_tokens).strip('/\\')
-            rel_dir = formatted_sub if formatted_sub.startswith('western') else os.path.join('western', formatted_sub).replace('\\', '/')
-
-        # 기타 카테고리
+            default_fmt = "western/scenes/{studio_1}/{studio}"
+            save_fmt = matched_folder_format or setting_source.get("western_image_server_save_format") or default_fmt
         elif target_cat == 'MOVIE':
-            rel_dir = f"movie/{year4_str}"
+            save_fmt = "movie/{year4}"
         elif target_cat in ['KTV', 'FTV']:
-            rel_dir = f"tv/{target_cat.lower()}"
+            save_fmt = f"tv/{target_cat.lower()}"
         else:
-            rel_dir = f"{domain}/{target_cat.lower()}"
+            save_fmt = f"{domain}/{target_cat.lower()}"
+
+        rel_dir = save_fmt.format_map(data_tokens).strip('/\\').replace('\\', '/')
 
         rel_dir = rel_dir.replace('\\', '/').strip('/')
         target_folder = os.path.join(local_root, rel_dir.replace('/', os.path.sep))
