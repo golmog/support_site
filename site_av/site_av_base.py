@@ -1318,10 +1318,10 @@ class SiteAvBase:
                 except Exception as e_local:
                     logger.debug(f"[{cls.site_name}] imopen 로컬 파일 로드 예외: {disk_path} ({e_local})")
 
-        # 순수 원격 원본 URL (DMM, JavBus 등)일 때만 네트워크 요청 수행
+        # 순수 원격 원본 URL일 때만 네트워크 요청 수행
         if img_src.startswith("http"):
             try:
-                res = cls.get_response(img_src, timeout=10)
+                res = cls.get_response(img_src, timeout=6, max_retries=2)
                 if not res or res.status_code != 200:
                     logger.debug(f"[{cls.site_name}] imopen failed: Status {res.status_code if res else 'None'} for {img_src}")
                     return None
@@ -1351,24 +1351,14 @@ class SiteAvBase:
                 return None
 
 
-    # jav_image 기본 처리
     @classmethod
     def default_jav_image(cls, image_url, mode=None):
-        res = None
-        # 재시도 로직 (최대 3회, 타임아웃 60초)
-        for i in range(3):
-            try:
-                res = cls.get_response(image_url, verify=False, timeout=60)
-                if res and res.status_code == 200:
-                    break
-            except Exception as e:
-                if i < 2: 
-                    time.sleep(2)
+        res = cls.get_response(image_url, verify=False, timeout=8, max_retries=2)
 
         if res is None:
             P.logger.error(f"image_proxy: SiteUtil.get_response returned None for URL: {image_url}")
-            abort(404) # 또는 적절한 에러 응답
-            return # 함수 종료
+            abort(404)
+            return
 
         if res.status_code != 200:
             P.logger.warning(f"image_proxy: Received status code {res.status_code} for URL: {image_url}")
@@ -1379,17 +1369,15 @@ class SiteAvBase:
         content_bytes = res.content
         is_image_content = False
 
-        # 1. Content-Type 헤더로 1차 확인
+        # Content-Type 헤더로 이미지 여부 1차 확인
         if content_type_header.startswith('image/'):
             is_image_content = True
-        # 2. binary/octet-stream인 경우, 파일 시그니처(Magic Number)로 2차 확인
+        # binary/octet-stream인 경우 파일 시그니처(Magic Number)로 2차 확인
         elif content_type_header == 'binary/octet-stream':
             if len(content_bytes) > 4:
-                # JPEG (JFIF, EXIF) or PNG or GIF
                 if (content_bytes.startswith(b'\xFF\xD8\xFF') or
                     content_bytes.startswith(b'\x89PNG') or
                     content_bytes.startswith(b'GIF8')):
-                    # logger.warning(f"image_proxy: Content-Type is 'binary/octet-stream' but content is a valid image. Proceeding for URL: {image_url}")
                     is_image_content = True
 
         if not is_image_content:
@@ -1402,19 +1390,16 @@ class SiteAvBase:
             im.load()
             imformat = im.format
 
-            # Pillow가 포맷을 감지 못했거나, Content-Type이 binary였을 경우, im.format으로 재확인
             if imformat is None or content_type_header == 'binary/octet-stream':
                 P.logger.debug(f"image_proxy: Pillow detected format '{imformat}' for binary stream. URL: {image_url}")
-                # Pillow가 감지한 포맷이 없다면, 기본 JPEG로 가정
                 if imformat not in ['JPEG', 'PNG', 'WEBP', 'GIF']:
                     imformat = 'JPEG'
 
             mimetype = im.get_format_mimetype() or f'image/{imformat.lower()}'
 
-        except UnidentifiedImageError as e: # PIL.UnidentifiedImageError 명시적 임포트 필요
+        except UnidentifiedImageError as e:
             P.logger.error(f"image_proxy: PIL.UnidentifiedImageError for URL: {image_url}. Response Content-Type: {content_type_header}")
             P.logger.error(f"image_proxy: Error details: {e}")
-            # 디버깅을 위해 실패한 이미지 데이터 일부 저장 (선택적)
             try:
                 failed_image_path = os.path.join(path_data, "tmp", f"failed_image_{time.time()}.bin")
                 with open(failed_image_path, 'wb') as f:
@@ -1422,7 +1407,7 @@ class SiteAvBase:
                 P.logger.info(f"image_proxy: Content of failed image saved to: {failed_image_path}")
             except Exception as save_err:
                 P.logger.error(f"image_proxy: Could not save failed image content: {save_err}")
-            abort(400) # 잘못된 이미지 파일
+            abort(400)
             return
         except Exception as e_pil:
             P.logger.error(f"image_proxy: General PIL error for URL: {image_url}: {e_pil}")
@@ -1432,21 +1417,17 @@ class SiteAvBase:
 
         if mode == 'smart_crop':
             # 가로 이미지(Landscape)인 경우에만 세로 포스터로 크롭 시도
-            # 비율 기준: 가로가 세로보다 1.1배 이상 클 때
             w, h = im.size
             if w > h * 0.8:
                 cropped = cls._smart_crop_image(im)
                 if cropped:
                     im = cropped
-            
-            # 처리가 끝났으므로 mode 초기화
             mode = None
 
         if mode is not None and mode.startswith("crop_"):
-
             operations = mode.replace("crop_", "").split('_')
 
-            # 1. 비율 정보가 있는지 확인하고 추출
+            # 비율 정보 확인 및 추출
             aspect_ratio = 1.4225
             if operations and operations[-1].replace('.', '', 1).isdigit():
                 try:
@@ -1454,22 +1435,19 @@ class SiteAvBase:
                 except ValueError:
                     pass
 
-            # 2. 크롭 명령
             processed_im = im
             is_first_op = True
             num_ops = len(operations)
 
             for op in operations:
                 new_im = None
-                # 이중 크롭의 첫 번째 단계('r' 또는 'l')일 때만 너비를 반으로 자름
                 if op in ['r', 'l'] and is_first_op and num_ops > 1:
                     width, height = processed_im.size
                     box = (width / 2, 0, width, height) if op == 'r' else (0, 0, width / 2, height)
                     new_im = processed_im.crop(box)
-                else: # 단일 크롭이거나, 이중 크롭의 두 번째 단계일 경우
+                else:
                     new_im = SiteUtilAv.imcrop(processed_im, position=op, aspect_ratio=aspect_ratio)
 
-                # 중간 이미지 객체 메모리 관리
                 if processed_im is not im:
                     processed_im.close()
                 processed_im = new_im
